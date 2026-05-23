@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Data and model artifacts
+data/raw/
+data/processed/
+outputs/
+checkpoints/
+logs/
+*.parquet
+*.pt
+*.bin
+*.safetensors
+
+# Reports generated from local runs
+reports/figures/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

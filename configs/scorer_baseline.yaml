@@ -1,0 +1,28 @@
+project_name: WebShopStepScorer
+seed: 42
+
+data:
+  raw_demo_path: data/raw/il_trajs_finalized_images.jsonl
+  output_dir: data/processed/scorer_baseline
+  max_history_steps: 4
+  negatives_per_positive: 3
+  hard_negative_same_action_type: true
+
+model:
+  name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  max_seq_length: 2048
+  objective: bce
+
+train:
+  learning_rate: 1.0e-5
+  batch_size: 8
+  num_epochs: 1
+  gradient_accumulation_steps: 4
+
+eval:
+  metrics:
+    - top1
+    - top3
+    - mrr
+    - auc
+    - score_gap
