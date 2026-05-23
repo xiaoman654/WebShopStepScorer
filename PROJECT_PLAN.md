@@ -55,12 +55,32 @@ positive: candidate_action = target_action, label = 1
 negative: candidate_action in available_actions except target_action, label = 0
 ```
 
+Important terminology:
+
+```text
+label=1 means demonstrated preferred action.
+label=0 means sampled contrastive alternative.
+```
+
+The negative label should not be interpreted as "absolutely wrong". WebShop
+often has multiple locally reasonable actions, such as `description`,
+`features`, and `reviews`. The first version trains an imitation/preference
+scorer, not a perfect reward model.
+
 Recommended negative sampling:
 
 - include 1-3 random negatives per state;
 - include hard negatives when possible, such as actions with the same type:
-  `click[...]` vs `click[...]`, `search[...]` vs `search[...]`;
+-  `click[item - ...]` vs `click[item - ...]`;
+- keep a `negative_strength` field: `hard`, `weak`, or `random`;
 - exclude exact duplicate actions.
+
+Search boundary:
+
+The first version only covers discrete admissible-action ranking. If a
+free-form `search[...]` target is not explicitly present in `available_actions`,
+the step is skipped. Search query generation can be handled as a separate
+project later.
 
 ## Phase 2: Scorer Model
 
@@ -111,6 +131,8 @@ Metrics:
 - AUC
 - positive/negative score gap
 - score distribution by action type
+- ranking metrics split by target action type
+- score gap split by `negative_strength`
 
 ## Phase 4: Optional RL Integration
 

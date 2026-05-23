@@ -7,6 +7,12 @@ data:
   max_history_steps: 4
   negatives_per_positive: 3
   hard_negative_same_action_type: true
+  skip_target_not_in_available_actions: true
+  include_state_files_for_ranking_eval: true
+  negative_strength_values:
+    - hard
+    - weak
+    - random
 
 model:
   name_or_path: Qwen/Qwen2.5-1.5B-Instruct
@@ -26,3 +32,5 @@ eval:
     - mrr
     - auc
     - score_gap
+    - by_action_type
+    - by_negative_strength
