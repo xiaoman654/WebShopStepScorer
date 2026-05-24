@@ -84,3 +84,47 @@ data/processed/scorer_baseline/stats.json
 The first dataset intentionally skips states where the demonstrated target
 action is not in `available_actions`. This makes the first milestone a discrete
 admissible-action ranking task, not a free-form search-query generation task.
+
+## Train the First Semantic Scorer
+
+After the TF-IDF baseline, the next scorer is a Qwen LoRA yes/no scorer. It
+turns each scorer example into:
+
+```text
+User: task + history + observation + candidate action
+Assistant: Yes / No
+```
+
+Build the SFT rows:
+
+```bash
+bash scripts/data/build_yesno_scorer_sft.sh
+```
+
+Run a small smoke first:
+
+```bash
+mkdir -p logs/train logs/eval
+
+bash scripts/train/run_qwen15b_yesno_scorer_lora_smoke.sh \
+  2>&1 | tee logs/train/qwen15b_yesno_scorer_lora_smoke_$(date +%Y%m%d_%H%M%S).log
+```
+
+Evaluate the smoke adapter on a small number of validation states:
+
+```bash
+MODEL_DIR=/root/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+
+python scripts/eval/evaluate_yesno_scorer_ranking.py \
+  --base-model "$MODEL_DIR" \
+  --adapter outputs/yesno_scorer/qwen25_1p5b_lora_smoke/final_adapter \
+  --states data/processed/scorer_baseline/valid_states.jsonl \
+  --out-json data/processed/scorer_baseline/yesno_scorer_smoke_ranking.json \
+  --out-md reports/yesno_scorer_smoke_ranking.md \
+  --max-states 100 \
+  --batch-size 8 \
+  --max-seq-length 2048 \
+  --bf16
+```
+
+Only run the full scorer if the smoke completes and ranking is sane.
