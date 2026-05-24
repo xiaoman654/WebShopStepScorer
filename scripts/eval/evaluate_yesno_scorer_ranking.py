@@ -193,6 +193,7 @@ def main() -> None:
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--max-observation-chars", type=int, default=4000)
     parser.add_argument("--max-history-chars", type=int, default=800)
+    parser.add_argument("--attn-implementation", default="flash_attention_2")
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     args = parser.parse_args()
@@ -219,6 +220,7 @@ def main() -> None:
         torch_dtype=dtype,
         trust_remote_code=True,
         device_map="auto",
+        attn_implementation=args.attn_implementation,
     )
     model = PeftModel.from_pretrained(base, args.adapter)
     model.eval()
@@ -271,6 +273,7 @@ def main() -> None:
     summary = {
         "base_model": args.base_model,
         "adapter": args.adapter,
+        "attn_implementation": args.attn_implementation,
         "states_file": args.states,
         "num_states": len(states),
         "yes_token_id": yes_id,
