@@ -74,3 +74,25 @@ click_other
 info
 navigation
 ```
+
+## Full Result
+
+The full Qwen2.5-1.5B Yes/No LoRA scorer was trained on the complete scorer SFT
+set and evaluated on all 1258 validation states.
+
+| Scorer | Top-1 | Top-3 | MRR | Mean rank |
+|---|---:|---:|---:|---:|
+| action_text_prior | 0.2591 | 0.5469 | 0.4455 | 5.517 |
+| TF-IDF + Logistic Regression | 0.2599 | 0.5294 | 0.4475 | 5.820 |
+| Qwen2.5-1.5B Yes/No LoRA | 0.3211 | 0.5851 | 0.4995 | 4.820 |
+
+The result passes the success threshold. The scorer is not a return-based
+critic yet, but it is a useful critic-like action preference model:
+
+```text
+f(s, a) ~= probability that a candidate action matches the demonstrated
+preferred action under the current WebShop state.
+```
+
+Recommended next step: qualitative ranking-case analysis and reranking/filtering
+prototype. Do not use it as reward shaping before checking reward-hacking risk.

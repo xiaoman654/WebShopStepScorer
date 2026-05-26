@@ -1,6 +1,6 @@
 # Offline Scorer Baseline
 
-Status: non-model baselines completed; learned scorer pending
+Status: offline scorer milestone completed
 
 ## Goal
 
@@ -18,10 +18,20 @@ target action above other admissible actions in WebShop states.
 - average admissible actions per valid state: 14.927
 - free-form search steps skipped: 2197
 
-## Model
+## Learned Scorers
 
-First learned scorer is pending. Before model training, we evaluated non-model
-ranking baselines on `valid_states.jsonl`.
+After non-model baselines, we evaluated two learned scorers:
+
+1. TF-IDF + logistic regression.
+2. Qwen2.5-1.5B LoRA Yes/No scorer.
+
+The Yes/No scorer uses:
+
+```text
+score(s, a) = P(Yes) / (P(Yes) + P(No))
+```
+
+for each available action, then ranks actions by this score.
 
 ## Non-Model Ranking Baselines
 
@@ -37,6 +47,37 @@ The strongest simple baseline is `action_text_prior` by MRR and Top-3, while
 `action_type_prior` has the same Top-1. A learned scorer should clearly exceed
 these numbers before we consider RL integration.
 
+## Learned Scorer Results
+
+| Scorer | Top-1 | Top-3 | MRR | Mean rank |
+|---|---:|---:|---:|---:|
+| TF-IDF + Logistic Regression | 0.2599 | 0.5294 | 0.4475 | 5.820 |
+| Qwen2.5-1.5B Yes/No LoRA | 0.3211 | 0.5851 | 0.4995 | 4.820 |
+
+The TF-IDF scorer has classification signal but does not meaningfully beat the
+best simple ranking baseline. The Qwen Yes/No scorer clearly improves ranking:
+
+```text
+Top-1: 0.2591 -> 0.3211
+Top-3: 0.5469 -> 0.5851
+MRR:   0.4455 -> 0.4995
+```
+
+This confirms that a semantic cross-encoder scorer learns useful WebShop action
+preference beyond action frequency and hand-written action-type priors.
+
+## Qwen Yes/No Scorer By Target Action Type
+
+| Type | states | Top-1 | Top-3 | MRR | Mean rank |
+|---|---:|---:|---:|---:|---:|
+| buy | 157 | 0.7070 | 0.8599 | 0.7893 | 4.764 |
+| click_other | 226 | 0.2965 | 0.5487 | 0.4694 | 7.199 |
+| info | 125 | 0.0640 | 0.6640 | 0.3814 | 3.544 |
+| item_click | 321 | 0.1682 | 0.4486 | 0.3806 | 4.340 |
+| navigation | 71 | 0.0282 | 0.2254 | 0.2193 | 7.042 |
+| option | 1 | 1.0000 | 1.0000 | 1.0000 | 1.000 |
+| pagination | 357 | 0.4510 | 0.6527 | 0.5939 | 3.784 |
+
 ## Action-Type Notes
 
 - `pagination` is easy for action-type prior: Top-1 is 0.9132 because
@@ -51,14 +92,13 @@ these numbers before we consider RL integration.
 
 ## Decision
 
-Proceed to the first learned scorer. The next baseline should be a lightweight
-CPU text model, such as TF-IDF + logistic regression, before moving to an LLM
-cross-encoder scorer.
+The first offline scorer milestone is successful. The Qwen Yes/No scorer beats
+the strongest non-model baseline and TF-IDF baseline on overall ranking.
 
-The first learned scorer target is:
+Next steps should not jump directly to reward shaping. Recommended order:
 
 ```text
-Top-1 > 0.259
-Top-3 > 0.547
-MRR   > 0.446
+1. Extract qualitative success/failure cases from Qwen scorer ranking.
+2. Compare scorer behavior by action type, especially item_click and navigation.
+3. Build a reranking or filtering prototype before using the scorer as reward.
 ```
