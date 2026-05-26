@@ -48,6 +48,58 @@ def format_history(history: list[dict[str, Any]], limit: int) -> str:
     return "\n".join(chunks)
 
 
+def history_chars(state: dict[str, Any] | None) -> int:
+    if not state:
+        return 0
+    return sum(len(str(item.get("observation", ""))) + len(str(item.get("action", ""))) for item in state.get("history") or [])
+
+
+def observation_chars(state: dict[str, Any] | None) -> int:
+    if not state:
+        return 0
+    return len(str(state.get("observation", "")))
+
+
+def action_index(case: dict[str, Any], action: str | None) -> int | None:
+    if not action:
+        return None
+    for item in case.get("scored_actions") or []:
+        if item.get("action") == action:
+            return int(item.get("rank", 0)) - 1
+    return None
+
+
+def classify_error(case: dict[str, Any], state: dict[str, Any] | None) -> str:
+    rank = int(case.get("rank") or 0)
+    if rank == 1:
+        return "top1_success"
+
+    target_type = str(case.get("target_action_type") or "unknown")
+    top1_type = str(case.get("top1_action_type") or "unknown")
+    top1_action = str(case.get("top1_action") or "").lower()
+    target_index = case.get("target_action_index")
+    top1_index = action_index(case, case.get("top1_action"))
+
+    if top1_type != target_type:
+        if top1_type == "buy":
+            return "late_stage_buy_bias"
+        if top1_type == "info":
+            return "generic_info_bias"
+        return "type_confusion"
+
+    if target_type == "item_click":
+        return "within_type_item_confusion"
+    if target_type in {"info", "navigation", "pagination"}:
+        return f"within_type_{target_type}_confusion"
+    if "description" in top1_action or "feature" in top1_action or "review" in top1_action:
+        return "generic_info_bias"
+    if isinstance(target_index, int) and isinstance(top1_index, int) and top1_index < target_index:
+        return "position_bias"
+    if state and target_type in {"item_click", "click_other", "option"}:
+        return "attribute_or_entity_mismatch"
+    return "other_failure"
+
+
 def format_case(
     case: dict[str, Any],
     state: dict[str, Any] | None,
@@ -57,17 +109,22 @@ def format_case(
     lines = [
         f"### `{case.get('state_id')}` rank={case.get('rank')} / {case.get('num_actions')}",
         "",
+        f"- error class: `{case.get('error_class', 'unknown')}`",
         f"- target type: `{case.get('target_action_type')}`",
         f"- target action: `{case.get('target_action')}`",
+        f"- target action index: `{case.get('target_action_index')}`",
         f"- target score: `{fmt_float(case.get('target_score'))}`",
         f"- top1 action: `{case.get('top1_action')}`",
         f"- top1 type: `{case.get('top1_action_type')}`",
         f"- top1 score: `{fmt_float(case.get('top1_score'))}`",
         f"- top1-target margin: `{fmt_float(case.get('score_margin_top1_minus_target'))}`",
+        f"- top1 same type as target: `{case.get('top1_same_type')}`",
     ]
     if state:
         lines.extend(
             [
+                f"- observation chars: `{observation_chars(state)}`",
+                f"- history chars: `{history_chars(state)}`",
                 f"- task: {state.get('instruction', '')}",
                 "",
                 "**Recent History**",
@@ -111,6 +168,17 @@ def main() -> None:
             "No case_records found. Re-run evaluate_yesno_scorer_ranking.py with the latest code."
         )
 
+    enriched_cases = []
+    for case in cases:
+        state = states.get(case["state_id"])
+        enriched = dict(case)
+        enriched["top1_same_type"] = case.get("top1_action_type") == case.get("target_action_type")
+        enriched["observation_chars"] = observation_chars(state)
+        enriched["history_chars"] = history_chars(state)
+        enriched["error_class"] = classify_error(enriched, state)
+        enriched_cases.append(enriched)
+    cases = enriched_cases
+
     successes = [case for case in cases if int(case["rank"]) == 1]
     near_misses = [case for case in cases if 1 < int(case["rank"]) <= 3]
     failures = [case for case in cases if int(case["rank"]) > 3]
@@ -124,8 +192,15 @@ def main() -> None:
     )
 
     by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_error: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for case in cases:
         by_type[str(case.get("target_action_type") or "unknown")].append(case)
+        by_error[str(case.get("error_class") or "unknown")].append(case)
+
+    same_type_misses = [case for case in failures if case.get("top1_same_type")]
+    cross_type_misses = [case for case in failures if not case.get("top1_same_type")]
+    margins = [float(case.get("score_margin_top1_minus_target") or 0.0) for case in cases]
+    close_misses = [case for case in failures if float(case.get("score_margin_top1_minus_target") or 0.0) <= 0.05]
 
     lines = [
         "# Yes/No Scorer Case Analysis",
@@ -139,6 +214,10 @@ def main() -> None:
         f"- top1 successes: {len(successes)}",
         f"- top3 near misses: {len(near_misses)}",
         f"- rank>3 failures: {len(failures)}",
+        f"- same-type rank>3 failures: {len(same_type_misses)}",
+        f"- cross-type rank>3 failures: {len(cross_type_misses)}",
+        f"- close rank>3 failures (margin <= 0.05): {len(close_misses)}",
+        f"- average top1-target margin: {sum(margins) / len(margins):.6f}",
         "",
         "## Cases By Target Type",
         "",
@@ -152,6 +231,46 @@ def main() -> None:
         fail = sum(int(case["rank"]) > 3 for case in rows)
         lines.append(f"| {action_type} | {len(rows)} | {top1} | {top3} | {fail} |")
 
+    lines.extend(
+        [
+            "",
+            "## Error Taxonomy",
+            "",
+            "| Error class | cases | top1 | top3 | rank>3 | avg margin |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for error_class in sorted(by_error):
+        rows = by_error[error_class]
+        top1 = sum(int(case["rank"]) == 1 for case in rows)
+        top3 = sum(int(case["rank"]) <= 3 for case in rows)
+        fail = sum(int(case["rank"]) > 3 for case in rows)
+        avg_margin = sum(float(case.get("score_margin_top1_minus_target") or 0.0) for case in rows) / len(rows)
+        lines.append(f"| {error_class} | {len(rows)} | {top1} | {top3} | {fail} | {avg_margin:.6f} |")
+
+    lines.extend(
+        [
+            "",
+            "## Length Buckets",
+            "",
+            "| Observation chars | cases | top1 | top3 | mean rank |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
+    buckets = [
+        ("<=1k", lambda x: x <= 1000),
+        ("1k-3k", lambda x: 1000 < x <= 3000),
+        (">3k", lambda x: x > 3000),
+    ]
+    for name, pred in buckets:
+        rows = [case for case in cases if pred(int(case.get("observation_chars") or 0))]
+        if not rows:
+            continue
+        top1 = sum(int(case["rank"]) == 1 for case in rows) / len(rows)
+        top3 = sum(int(case["rank"]) <= 3 for case in rows) / len(rows)
+        mean_rank = sum(int(case["rank"]) for case in rows) / len(rows)
+        lines.append(f"| {name} | {len(rows)} | {top1:.4f} | {top3:.4f} | {mean_rank:.3f} |")
+
     sections = [
         ("Top-1 Success Examples", pick_cases(successes, args.limit)),
         ("Top-3 Near Miss Examples", pick_cases(near_misses, args.limit)),
@@ -161,6 +280,17 @@ def main() -> None:
         typed_failures = [case for case in failures if case.get("target_action_type") == action_type]
         if typed_failures:
             sections.append((f"{action_type} Failures", pick_cases(typed_failures, args.limit)))
+    for error_class in [
+        "type_confusion",
+        "within_type_item_confusion",
+        "generic_info_bias",
+        "late_stage_buy_bias",
+        "position_bias",
+        "attribute_or_entity_mismatch",
+    ]:
+        error_rows = [case for case in failures if case.get("error_class") == error_class]
+        if error_rows:
+            sections.append((f"{error_class} Examples", pick_cases(error_rows, args.limit)))
 
     for title, rows in sections:
         lines.extend(["", f"## {title}", ""])

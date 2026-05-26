@@ -130,20 +130,74 @@ Metrics:
 - MRR
 - AUC
 - positive/negative score gap
+- target vs. top-1 score margin
+- whether the top-1 action has the same action type as the target
 - score distribution by action type
 - ranking metrics split by target action type
 - score gap split by `negative_strength`
 
-## Phase 4: Optional RL Integration
+Qualitative analysis should be standardized rather than purely anecdotal. Each
+case report should include:
+
+- target action rank, score, type, and original action-list position;
+- top-1/top-3 actions, scores, types, and score margins;
+- number of admissible actions;
+- observation/history lengths;
+- whether the top-1 action shares the target action type;
+- an error taxonomy label.
+
+Initial error taxonomy:
+
+- `type_confusion`: top-1 and target have different action types;
+- `within_type_item_confusion`: both actions are item clicks, but the item differs;
+- `attribute_or_entity_mismatch`: likely fine-grained product/attribute mismatch;
+- `position_bias`: scorer prefers an earlier action in the action list;
+- `generic_info_bias`: scorer over-prefers `description`, `features`, or `reviews`;
+- `late_stage_buy_bias`: scorer over-prefers `buy now`.
+
+## Phase 4: Offline Selector Utility
+
+Before RL integration, run an offline selector simulation:
+
+1. use the scorer top-1 action as the selected action for each validation state;
+2. compare exact match, top-k inclusion, same-type match, and score margin;
+3. split results by action type and error taxonomy.
+
+This phase answers whether the scorer is useful as an action selector or
+filter, not merely whether it has a reasonable AUC.
+
+## Phase 5: Harder Negatives and Objective Ablations
+
+If the first scorer mostly fails on fine-grained item selection, add a smaller
+hard-negative dataset rather than only scaling data size. Useful harder
+negatives include:
+
+- same-page item clicks with similar titles;
+- same category but wrong color, size, price, or brand;
+- `description` / `features` / `reviews` weak negatives;
+- buy actions from states where a required attribute is still missing.
+
+The first training objective is pointwise Yes/No scoring. A later small
+comparison can test pairwise ranking:
+
+```text
+state + action_a + action_b -> which action is better?
+```
+
+Pairwise ranking is more aligned with the final selector use case, but it should
+remain a follow-up until the pointwise scorer's failure modes are understood.
+
+## Phase 6: Optional RL Integration
 
 Only start this phase if offline ranking is clearly better than simple
-baselines.
+baselines and selector-simulation errors are explainable.
 
 Low-risk integration order:
 
-1. rollout filtering;
-2. trajectory reranking;
-3. small-weight reward shaping.
+1. action reranking / selector prototype;
+2. rollout filtering;
+3. trajectory reranking;
+4. small-weight reward shaping.
 
 Reward shaping should be last:
 
