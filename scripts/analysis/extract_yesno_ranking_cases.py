@@ -104,7 +104,7 @@ def format_case(
     case: dict[str, Any],
     state: dict[str, Any] | None,
     obs_chars: int,
-    history_chars: int,
+    max_history_chars: int,
 ) -> str:
     lines = [
         f"### `{case.get('state_id')}` rank={case.get('rank')} / {case.get('num_actions')}",
@@ -129,7 +129,7 @@ def format_case(
                 "",
                 "**Recent History**",
                 "",
-                format_history(state.get("history") or [], history_chars),
+                format_history(state.get("history") or [], max_history_chars),
                 "",
                 "**Observation Prefix**",
                 "",
