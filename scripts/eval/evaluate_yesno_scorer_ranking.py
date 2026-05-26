@@ -249,6 +249,7 @@ def main() -> None:
     by_type_states: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_type_ranks: dict[str, list[int]] = defaultdict(list)
     examples = []
+    case_records = []
 
     processed_actions = 0
     partial_json = Path(args.partial_json) if args.partial_json else Path(args.out_json).with_suffix(".partial.json")
@@ -278,20 +279,27 @@ def main() -> None:
         processed_actions += len(actions)
         scored = sorted(zip(actions, scores), key=lambda item: (-item[1], item[0]))
         rank = next(idx for idx, (action, _) in enumerate(scored, start=1) if action == state["target_action"])
+        target_score = next(score for action, score in scored if action == state["target_action"])
         ranks.append(rank)
         target_type = str(state.get("target_action_type") or "unknown")
         by_type_states[target_type].append(state)
         by_type_ranks[target_type].append(rank)
+        case_record = {
+            "state_id": state.get("state_id"),
+            "trajectory_id": state.get("trajectory_id"),
+            "step_id": state.get("step_id"),
+            "target_action": state.get("target_action"),
+            "target_action_type": target_type,
+            "target_score": target_score,
+            "rank": rank,
+            "num_actions": len(actions),
+            "top1_action": scored[0][0] if scored else None,
+            "top1_score": scored[0][1] if scored else None,
+            "top5": [{"action": action, "score": score} for action, score in scored[:5]],
+        }
+        case_records.append(case_record)
         if state_idx < 20:
-            examples.append(
-                {
-                    "state_id": state.get("state_id"),
-                    "target_action": state.get("target_action"),
-                    "target_action_type": target_type,
-                    "rank": rank,
-                    "top5": [{"action": action, "score": score} for action, score in scored[:5]],
-                }
-            )
+            examples.append(case_record)
         done_states = state_idx + 1
         should_report = (
             args.progress_every > 0
@@ -324,6 +332,7 @@ def main() -> None:
                 "eta_s": eta,
                 "ranking_so_far": current,
                 "examples": examples,
+                "case_records_so_far": case_records,
             }
             write_json(partial_json, partial)
 
@@ -343,6 +352,7 @@ def main() -> None:
             },
         },
         "examples": examples,
+        "case_records": case_records,
     }
     write_json(Path(args.out_json), summary)
     write_markdown(Path(args.out_md), summary)
