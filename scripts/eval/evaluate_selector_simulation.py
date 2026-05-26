@@ -100,6 +100,100 @@ def by_target_type(cases: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {key: summarize_cases(rows) for key, rows in sorted(groups.items())}
 
 
+def best_action_in_type(case: dict[str, Any], action_type: str) -> dict[str, Any] | None:
+    candidates = [item for item in case.get("scored_actions", []) if item.get("action_type") == action_type]
+    return candidates[0] if candidates else None
+
+
+def selected_action_with_buy_penalty(case: dict[str, Any], penalty: float) -> dict[str, Any] | None:
+    scored = []
+    for item in case.get("scored_actions", []):
+        adjusted = float(item.get("score") or 0.0)
+        if item.get("action_type") == "buy":
+            adjusted -= penalty
+        scored.append((adjusted, str(item.get("action") or ""), item))
+    if not scored:
+        return None
+    return sorted(scored, key=lambda x: (-x[0], x[1]))[0][2]
+
+
+def selected_action_conservative_buy(case: dict[str, Any], margin: float) -> dict[str, Any] | None:
+    actions = case.get("scored_actions", [])
+    if not actions:
+        return None
+    top1 = actions[0]
+    if top1.get("action_type") != "buy" or len(actions) == 1:
+        return top1
+    second = actions[1]
+    gap = float(top1.get("score") or 0.0) - float(second.get("score") or 0.0)
+    if gap <= margin:
+        return second
+    return top1
+
+
+def summarize_policy_selection(cases: list[dict[str, Any]], selections: list[dict[str, Any] | None]) -> dict[str, Any]:
+    n = len(cases)
+    exact = 0
+    same_type = 0
+    selected_types = Counter()
+    by_type: dict[str, list[tuple[dict[str, Any], dict[str, Any] | None]]] = defaultdict(list)
+    for case, selected in zip(cases, selections):
+        target_type = str(case.get("target_action_type") or "unknown")
+        by_type[target_type].append((case, selected))
+        if selected is None:
+            selected_types["none"] += 1
+            continue
+        selected_types[str(selected.get("action_type") or "unknown")] += 1
+        if selected.get("action") == case.get("target_action"):
+            exact += 1
+        if selected.get("action_type") == case.get("target_action_type"):
+            same_type += 1
+
+    by_target = {}
+    for target_type, rows in sorted(by_type.items()):
+        row_n = len(rows)
+        row_exact = sum(
+            selected is not None and selected.get("action") == case.get("target_action")
+            for case, selected in rows
+        )
+        row_same = sum(
+            selected is not None and selected.get("action_type") == case.get("target_action_type")
+            for case, selected in rows
+        )
+        by_target[target_type] = {
+            "num_states": row_n,
+            "exact_match": safe_div(row_exact, row_n),
+            "exact_count": row_exact,
+            "same_type_match": safe_div(row_same, row_n),
+            "same_type_count": row_same,
+        }
+    return {
+        "num_states": n,
+        "exact_match": safe_div(exact, n),
+        "exact_count": exact,
+        "same_type_match": safe_div(same_type, n),
+        "same_type_count": same_type,
+        "selected_type_distribution": dict(sorted(selected_types.items())),
+        "by_target_action_type": by_target,
+    }
+
+
+def policy_simulations(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    sims = {
+        "greedy_top1": [case.get("scored_actions", [None])[0] for case in cases],
+        "oracle_target_type": [
+            best_action_in_type(case, str(case.get("target_action_type") or "unknown")) for case in cases
+        ],
+    }
+    for penalty in [0.05, 0.10, 0.20]:
+        sims[f"buy_penalty_{penalty:.2f}"] = [selected_action_with_buy_penalty(case, penalty) for case in cases]
+    for margin in [0.05, 0.10, 0.20]:
+        sims[f"conservative_buy_margin_{margin:.2f}"] = [
+            selected_action_conservative_buy(case, margin) for case in cases
+        ]
+    return {name: summarize_policy_selection(cases, selections) for name, selections in sims.items()}
+
+
 def write_markdown(path: Path, summary: dict[str, Any]) -> None:
     overall = summary["overall"]
     lines = [
@@ -181,6 +275,29 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
         values = [str(row.get(col, 0)) for col in all_cols]
         lines.append(f"| {row_type} | " + " | ".join(values) + " |")
 
+    lines.extend(
+        [
+            "",
+            "## Policy Simulations",
+            "",
+            "These are offline diagnostics, not environment rollouts.",
+            "`oracle_target_type` measures the upper bound of a perfect action-type gate plus current within-type scorer ranking.",
+            "",
+            "| Policy | exact match | same-type match | buy top1 share | item_click top1 share | navigation top1 share | pagination top1 share |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for policy_name, values in summary["policy_simulations"].items():
+        dist = values["selected_type_distribution"]
+        total_selected = sum(dist.values())
+        lines.append(
+            f"| {policy_name} | {values['exact_match']:.4f} | {values['same_type_match']:.4f} | "
+            f"{safe_div(dist.get('buy', 0), total_selected):.4f} | "
+            f"{safe_div(dist.get('item_click', 0), total_selected):.4f} | "
+            f"{safe_div(dist.get('navigation', 0), total_selected):.4f} | "
+            f"{safe_div(dist.get('pagination', 0), total_selected):.4f} |"
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -207,6 +324,7 @@ def main() -> None:
         "top1_action_type_distribution": action_type_counts(cases, "top1_action_type"),
         "by_target_action_type": by_target_type(cases),
         "confusion_matrix": confusion_matrix(cases),
+        "policy_simulations": policy_simulations(cases),
     }
     write_json(Path(args.out_json), summary)
     write_markdown(Path(args.out_md), summary)
