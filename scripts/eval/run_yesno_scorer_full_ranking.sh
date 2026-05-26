@@ -25,4 +25,5 @@ python scripts/eval/evaluate_yesno_scorer_ranking.py \
   --batch-size 8 \
   --max-seq-length 2048 \
   --attn-implementation flash_attention_2 \
+  --progress-every 20 \
   --bf16

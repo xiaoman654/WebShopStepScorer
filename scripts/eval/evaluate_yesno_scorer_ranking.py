@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -188,12 +189,14 @@ def main() -> None:
     parser.add_argument("--states", default="data/processed/scorer_baseline/valid_states.jsonl")
     parser.add_argument("--out-json", default="data/processed/scorer_baseline/yesno_scorer_ranking.json")
     parser.add_argument("--out-md", default="reports/yesno_scorer_ranking.md")
+    parser.add_argument("--partial-json", default=None)
     parser.add_argument("--max-states", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--max-observation-chars", type=int, default=4000)
     parser.add_argument("--max-history-chars", type=int, default=800)
     parser.add_argument("--attn-implementation", default="flash_attention_2")
+    parser.add_argument("--progress-every", type=int, default=20)
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     args = parser.parse_args()
@@ -208,13 +211,26 @@ def main() -> None:
             "Run it inside the server training environment."
         ) from exc
 
+    started_at = time.time()
+    print(f"[startup] loading states from {args.states}", flush=True)
     states = load_jsonl(Path(args.states), args.max_states)
+    total_actions = sum(len(state.get("available_actions") or []) for state in states)
+    print(
+        f"[startup] loaded {len(states)} states with {total_actions} candidate actions",
+        flush=True,
+    )
+    print(f"[startup] loading tokenizer: {args.base_model}", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
     dtype = torch.bfloat16 if args.bf16 else torch.float16 if args.fp16 else torch.float32
+    print(
+        f"[startup] loading base model: {args.base_model} "
+        f"dtype={dtype} attn={args.attn_implementation}",
+        flush=True,
+    )
     base = AutoModelForCausalLM.from_pretrained(
         args.base_model,
         torch_dtype=dtype,
@@ -222,14 +238,20 @@ def main() -> None:
         device_map="auto",
         attn_implementation=args.attn_implementation,
     )
+    print(f"[startup] loading adapter: {args.adapter}", flush=True)
     model = PeftModel.from_pretrained(base, args.adapter)
     model.eval()
 
     yes_id, no_id = yes_no_token_ids(tokenizer)
+    print(f"[startup] yes_token_id={yes_id} no_token_id={no_id}", flush=True)
+    print("[eval] starting ranking loop", flush=True)
     ranks = []
     by_type_states: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_type_ranks: dict[str, list[int]] = defaultdict(list)
     examples = []
+
+    processed_actions = 0
+    partial_json = Path(args.partial_json) if args.partial_json else Path(args.out_json).with_suffix(".partial.json")
 
     for state_idx, state in enumerate(states):
         actions = list(state.get("available_actions") or [])
@@ -253,6 +275,7 @@ def main() -> None:
             args.batch_size,
             args.max_seq_length,
         )
+        processed_actions += len(actions)
         scored = sorted(zip(actions, scores), key=lambda item: (-item[1], item[0]))
         rank = next(idx for idx, (action, _) in enumerate(scored, start=1) if action == state["target_action"])
         ranks.append(rank)
@@ -269,6 +292,40 @@ def main() -> None:
                     "top5": [{"action": action, "score": score} for action, score in scored[:5]],
                 }
             )
+        done_states = state_idx + 1
+        should_report = (
+            args.progress_every > 0
+            and (done_states == 1 or done_states % args.progress_every == 0 or done_states == len(states))
+        )
+        if should_report:
+            elapsed = time.time() - started_at
+            states_per_sec = done_states / elapsed if elapsed > 0 else 0.0
+            actions_per_sec = processed_actions / elapsed if elapsed > 0 else 0.0
+            eta = (len(states) - done_states) / states_per_sec if states_per_sec > 0 else 0.0
+            current = summarize_ranks(states[:done_states], ranks)
+            print(
+                "[progress] "
+                f"states={done_states}/{len(states)} "
+                f"actions={processed_actions}/{total_actions} "
+                f"elapsed_s={elapsed:.1f} eta_s={eta:.1f} "
+                f"states_per_s={states_per_sec:.3f} actions_per_s={actions_per_sec:.3f} "
+                f"top1={current['top1']:.4f} top3={current['top3']:.4f} mrr={current['mrr']:.4f}",
+                flush=True,
+            )
+            partial = {
+                "base_model": args.base_model,
+                "adapter": args.adapter,
+                "states_file": args.states,
+                "processed_states": done_states,
+                "total_states": len(states),
+                "processed_actions": processed_actions,
+                "total_actions": total_actions,
+                "elapsed_s": elapsed,
+                "eta_s": eta,
+                "ranking_so_far": current,
+                "examples": examples,
+            }
+            write_json(partial_json, partial)
 
     summary = {
         "base_model": args.base_model,
@@ -292,6 +349,7 @@ def main() -> None:
     print(json.dumps(summary["ranking"], indent=2, ensure_ascii=False))
     print(f"wrote: {args.out_json}")
     print(f"wrote: {args.out_md}")
+    print(f"partial progress file: {partial_json}")
 
 
 if __name__ == "__main__":
