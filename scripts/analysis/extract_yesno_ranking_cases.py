@@ -146,8 +146,143 @@ def format_case(
     return "\n".join(lines)
 
 
+def format_compact_case(case: dict[str, Any]) -> str:
+    top5 = case.get("top5") or []
+    top3 = [
+        f"{idx}. {item.get('action')} ({item.get('action_type')}, {fmt_float(item.get('score'))})"
+        for idx, item in enumerate(top5[:3], start=1)
+    ]
+    return "\n".join(
+        [
+            f"- `{case.get('state_id')}` | `{case.get('error_class')}` | "
+            f"rank {case.get('rank')}/{case.get('num_actions')} | "
+            f"target `{case.get('target_action_type')}` score {fmt_float(case.get('target_score'))} | "
+            f"top1 `{case.get('top1_action_type')}` score {fmt_float(case.get('top1_score'))} | "
+            f"margin {fmt_float(case.get('score_margin_top1_minus_target'))}",
+            f"  - target: `{case.get('target_action')}`",
+            f"  - top3: {' ; '.join(top3)}",
+        ]
+    )
+
+
 def pick_cases(cases: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     return cases[:limit]
+
+
+def write_compact_report(
+    path: Path,
+    ranking_json: str,
+    states_path: str,
+    cases: list[dict[str, Any]],
+    by_type: dict[str, list[dict[str, Any]]],
+    by_error: dict[str, list[dict[str, Any]]],
+    limit: int,
+) -> None:
+    successes = [case for case in cases if int(case["rank"]) == 1]
+    near_misses = [case for case in cases if 1 < int(case["rank"]) <= 3]
+    failures = [case for case in cases if int(case["rank"]) > 3]
+    same_type_misses = [case for case in failures if case.get("top1_same_type")]
+    cross_type_misses = [case for case in failures if not case.get("top1_same_type")]
+    close_misses = [case for case in failures if float(case.get("score_margin_top1_minus_target") or 0.0) <= 0.05]
+    margins = [float(case.get("score_margin_top1_minus_target") or 0.0) for case in cases]
+    severe_failures = sorted(
+        failures,
+        key=lambda x: (
+            int(x["rank"]),
+            float(x.get("score_margin_top1_minus_target") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    lines = [
+        "# Yes/No Scorer Case Analysis Compact",
+        "",
+        f"Ranking file: `{ranking_json}`",
+        f"States file: `{states_path}`",
+        "",
+        "## Key Takeaways",
+        "",
+        f"- total states: {len(cases)}",
+        f"- top1 successes: {len(successes)} ({len(successes) / len(cases):.4f})",
+        f"- top3 coverage: {sum(int(case['rank']) <= 3 for case in cases)} ({sum(int(case['rank']) <= 3 for case in cases) / len(cases):.4f})",
+        f"- rank>3 failures: {len(failures)} ({len(failures) / len(cases):.4f})",
+        f"- same-type rank>3 failures: {len(same_type_misses)}",
+        f"- cross-type rank>3 failures: {len(cross_type_misses)}",
+        f"- close rank>3 failures, margin <= 0.05: {len(close_misses)}",
+        f"- average top1-target margin: {sum(margins) / len(margins):.6f}",
+        "",
+        "## Target Action Type Summary",
+        "",
+        "| Type | cases | top1 | top3 | rank>3 | avg margin |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for action_type in sorted(by_type):
+        rows = by_type[action_type]
+        top1 = sum(int(case["rank"]) == 1 for case in rows)
+        top3 = sum(int(case["rank"]) <= 3 for case in rows)
+        fail = sum(int(case["rank"]) > 3 for case in rows)
+        avg_margin = sum(float(case.get("score_margin_top1_minus_target") or 0.0) for case in rows) / len(rows)
+        lines.append(f"| {action_type} | {len(rows)} | {top1} | {top3} | {fail} | {avg_margin:.6f} |")
+
+    lines.extend(
+        [
+            "",
+            "## Error Taxonomy Summary",
+            "",
+            "| Error class | cases | top1 | top3 | rank>3 | avg margin |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for error_class in sorted(by_error):
+        rows = by_error[error_class]
+        top1 = sum(int(case["rank"]) == 1 for case in rows)
+        top3 = sum(int(case["rank"]) <= 3 for case in rows)
+        fail = sum(int(case["rank"]) > 3 for case in rows)
+        avg_margin = sum(float(case.get("score_margin_top1_minus_target") or 0.0) for case in rows) / len(rows)
+        lines.append(f"| {error_class} | {len(rows)} | {top1} | {top3} | {fail} | {avg_margin:.6f} |")
+
+    lines.extend(
+        [
+            "",
+            "## Minimal Representative Cases",
+            "",
+            "### Severe Failures",
+            "",
+        ]
+    )
+    for case in severe_failures[:limit]:
+        lines.append(format_compact_case(case))
+        lines.append("")
+
+    lines.extend(["### Near Misses", ""])
+    for case in near_misses[:limit]:
+        lines.append(format_compact_case(case))
+        lines.append("")
+
+    lines.extend(["### Successes", ""])
+    for case in successes[:limit]:
+        lines.append(format_compact_case(case))
+        lines.append("")
+
+    for error_class in [
+        "type_confusion",
+        "within_type_item_confusion",
+        "generic_info_bias",
+        "late_stage_buy_bias",
+        "position_bias",
+        "attribute_or_entity_mismatch",
+    ]:
+        rows = [case for case in failures if case.get("error_class") == error_class]
+        if not rows:
+            continue
+        lines.extend([f"### {error_class}", ""])
+        for case in rows[:limit]:
+            lines.append(format_compact_case(case))
+            lines.append("")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    print(f"wrote: {path}")
 
 
 def main() -> None:
@@ -155,7 +290,9 @@ def main() -> None:
     parser.add_argument("--ranking-json", default="data/processed/scorer_baseline/yesno_scorer_full_ranking.json")
     parser.add_argument("--states", default="data/processed/scorer_baseline/valid_states.jsonl")
     parser.add_argument("--out-md", default="reports/yesno_scorer_case_analysis.md")
+    parser.add_argument("--compact-out-md", default="reports/yesno_scorer_case_analysis_compact.md")
     parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--compact-limit", type=int, default=2)
     parser.add_argument("--obs-chars", type=int, default=1200)
     parser.add_argument("--history-chars", type=int, default=400)
     args = parser.parse_args()
@@ -305,6 +442,15 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     print(f"wrote: {out_path}")
+    write_compact_report(
+        Path(args.compact_out_md),
+        args.ranking_json,
+        args.states,
+        cases,
+        by_type,
+        by_error,
+        args.compact_limit,
+    )
 
 
 if __name__ == "__main__":
