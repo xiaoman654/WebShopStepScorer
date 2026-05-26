@@ -31,6 +31,12 @@ def truncate(text: Any, limit: int) -> str:
     return value[:limit] + "..."
 
 
+def fmt_float(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    return f"{float(value):.6f}"
+
+
 def format_history(history: list[dict[str, Any]], limit: int) -> str:
     if not history:
         return "None"
@@ -53,9 +59,11 @@ def format_case(
         "",
         f"- target type: `{case.get('target_action_type')}`",
         f"- target action: `{case.get('target_action')}`",
-        f"- target score: `{case.get('target_score'):.6f}`",
+        f"- target score: `{fmt_float(case.get('target_score'))}`",
         f"- top1 action: `{case.get('top1_action')}`",
-        f"- top1 score: `{case.get('top1_score'):.6f}`",
+        f"- top1 type: `{case.get('top1_action_type')}`",
+        f"- top1 score: `{fmt_float(case.get('top1_score'))}`",
+        f"- top1-target margin: `{fmt_float(case.get('score_margin_top1_minus_target'))}`",
     ]
     if state:
         lines.extend(
@@ -73,7 +81,11 @@ def format_case(
         )
     lines.extend(["", "**Top-5 actions**", ""])
     for idx, item in enumerate(case.get("top5") or [], start=1):
-        lines.append(f"{idx}. `{item.get('action')}` score={item.get('score'):.6f}")
+        marker = " target" if item.get("is_target") else ""
+        lines.append(
+            f"{idx}. `{item.get('action')}` "
+            f"type={item.get('action_type')} score={fmt_float(item.get('score'))}{marker}"
+        )
     return "\n".join(lines)
 
 
@@ -102,7 +114,14 @@ def main() -> None:
     successes = [case for case in cases if int(case["rank"]) == 1]
     near_misses = [case for case in cases if 1 < int(case["rank"]) <= 3]
     failures = [case for case in cases if int(case["rank"]) > 3]
-    severe_failures = sorted(failures, key=lambda x: int(x["rank"]), reverse=True)
+    severe_failures = sorted(
+        failures,
+        key=lambda x: (
+            int(x["rank"]),
+            float(x.get("score_margin_top1_minus_target") or 0.0),
+        ),
+        reverse=True,
+    )
 
     by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for case in cases:

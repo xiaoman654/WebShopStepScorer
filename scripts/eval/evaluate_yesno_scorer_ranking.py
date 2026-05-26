@@ -56,6 +56,19 @@ def action_type_for_state_action(state: dict[str, Any], action: str) -> str:
     return "unknown"
 
 
+def build_scored_actions(state: dict[str, Any], scored: list[tuple[str, float]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "rank": idx,
+            "action": action,
+            "action_type": action_type_for_state_action(state, action),
+            "score": score,
+            "is_target": action == state.get("target_action"),
+        }
+        for idx, (action, score) in enumerate(scored, start=1)
+    ]
+
+
 def make_prompt(
     state: dict[str, Any],
     action: str,
@@ -280,6 +293,9 @@ def main() -> None:
         scored = sorted(zip(actions, scores), key=lambda item: (-item[1], item[0]))
         rank = next(idx for idx, (action, _) in enumerate(scored, start=1) if action == state["target_action"])
         target_score = next(score for action, score in scored if action == state["target_action"])
+        scored_actions = build_scored_actions(state, scored)
+        top1_score = scored[0][1] if scored else None
+        score_margin_top1_minus_target = top1_score - target_score if top1_score is not None else None
         ranks.append(rank)
         target_type = str(state.get("target_action_type") or "unknown")
         by_type_states[target_type].append(state)
@@ -293,9 +309,13 @@ def main() -> None:
             "target_score": target_score,
             "rank": rank,
             "num_actions": len(actions),
+            "target_action_index": actions.index(state["target_action"]) if state["target_action"] in actions else None,
             "top1_action": scored[0][0] if scored else None,
-            "top1_score": scored[0][1] if scored else None,
-            "top5": [{"action": action, "score": score} for action, score in scored[:5]],
+            "top1_action_type": action_type_for_state_action(state, scored[0][0]) if scored else None,
+            "top1_score": top1_score,
+            "score_margin_top1_minus_target": score_margin_top1_minus_target,
+            "top5": scored_actions[:5],
+            "scored_actions": scored_actions,
         }
         case_records.append(case_record)
         if state_idx < 20:
@@ -324,6 +344,15 @@ def main() -> None:
                 "base_model": args.base_model,
                 "adapter": args.adapter,
                 "states_file": args.states,
+                "scoring_config": {
+                    "batch_size": args.batch_size,
+                    "max_seq_length": args.max_seq_length,
+                    "max_observation_chars": args.max_observation_chars,
+                    "max_history_chars": args.max_history_chars,
+                    "attn_implementation": args.attn_implementation,
+                    "bf16": args.bf16,
+                    "fp16": args.fp16,
+                },
                 "processed_states": done_states,
                 "total_states": len(states),
                 "processed_actions": processed_actions,
@@ -344,6 +373,15 @@ def main() -> None:
         "num_states": len(states),
         "yes_token_id": yes_id,
         "no_token_id": no_id,
+        "scoring_config": {
+            "batch_size": args.batch_size,
+            "max_seq_length": args.max_seq_length,
+            "max_observation_chars": args.max_observation_chars,
+            "max_history_chars": args.max_history_chars,
+            "attn_implementation": args.attn_implementation,
+            "bf16": args.bf16,
+            "fp16": args.fp16,
+        },
         "ranking": {
             "overall": summarize_ranks(states, ranks),
             "by_target_action_type": {
