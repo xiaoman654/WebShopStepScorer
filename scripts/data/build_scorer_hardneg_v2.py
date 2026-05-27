@@ -18,14 +18,16 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from build_scorer_dataset import (
-    action_type,
-    build_states,
-    make_example,
-    sample_negative_actions,
-    split_by_trajectory,
-    write_jsonl,
-)
+from build_scorer_dataset import action_type, build_states, make_example, sample_negative_actions, split_by_trajectory, write_jsonl
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
 
 
 def add_negative(
@@ -158,6 +160,13 @@ def main() -> None:
         "--input",
         default="data/raw/webshop_demos/il_trajs_finalized_images/il_trajs_finalized_images.jsonl",
     )
+    parser.add_argument("--train-states", default="data/processed/scorer_baseline/train_states.jsonl")
+    parser.add_argument("--valid-states", default="data/processed/scorer_baseline/valid_states.jsonl")
+    parser.add_argument(
+        "--from-raw",
+        action="store_true",
+        help="Rebuild states from --input instead of reusing baseline train/valid state files.",
+    )
     parser.add_argument("--out-dir", default="data/processed/scorer_hardneg_v2")
     parser.add_argument("--valid-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
@@ -165,15 +174,35 @@ def main() -> None:
     parser.add_argument("--negatives-per-positive", type=int, default=5)
     args = parser.parse_args()
 
-    input_path = Path(args.input)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Demo file not found: {input_path}")
-
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    states, state_stats = build_states(args)
-    train_states, valid_states = split_by_trajectory(states, args.valid_ratio, args.seed)
+    if args.from_raw:
+        input_path = Path(args.input)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Demo file not found: {input_path}")
+        states, state_stats = build_states(args)
+        train_states, valid_states = split_by_trajectory(states, args.valid_ratio, args.seed)
+        state_source = str(input_path)
+    else:
+        train_states_path = Path(args.train_states)
+        valid_states_path = Path(args.valid_states)
+        if not train_states_path.exists():
+            raise FileNotFoundError(f"Train states file not found: {train_states_path}")
+        if not valid_states_path.exists():
+            raise FileNotFoundError(f"Valid states file not found: {valid_states_path}")
+        train_states = load_jsonl(train_states_path)
+        valid_states = load_jsonl(valid_states_path)
+        state_source = f"{train_states_path}; {valid_states_path}"
+        state_stats = {
+            "input": state_source,
+            "kept_states": len(train_states) + len(valid_states),
+            "skipped": {},
+            "target_action_type_counts": dict(
+                Counter(str(row.get("target_action_type") or "unknown") for row in train_states + valid_states).most_common()
+            ),
+            "max_history_steps": "reused_from_baseline_states",
+        }
 
     train_examples, train_example_stats = build_examples_v2(
         train_states,
@@ -196,6 +225,8 @@ def main() -> None:
     stats: dict[str, Any] = {
         **state_stats,
         "out_dir": str(out_dir),
+        "state_source": state_source,
+        "from_raw": args.from_raw,
         "valid_ratio": args.valid_ratio,
         "seed": args.seed,
         "num_train_states": len(train_states),
